@@ -153,6 +153,11 @@ let cash = 10000;
 let portfolio = {};
 let lastPrice = 0;
 
+// Ensure portfolio object exists immediately
+function ensurePortfolio(symbol){
+  if(!portfolio[symbol]) portfolio[symbol] = {shares:0, price:0};
+}
+
 function updatePortfolioDisplay() {
   let total = cash;
   let html = "";
@@ -172,49 +177,53 @@ function updatePortfolioDisplay() {
 // -------------------------
 async function loadStock() {
   const symbol = document.getElementById("symbol").value.toUpperCase();
+  ensurePortfolio(symbol);
+  
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=6mo`;
-  const res = await fetch(url);
-  const data = await res.json();
-  if (!data.chart.result) { alert("Invalid symbol"); return; }
-  const timestamps = data.chart.result[0].timestamp;
-  const o = data.chart.result[0].indicators.quote[0].open;
-  const h = data.chart.result[0].indicators.quote[0].high;
-  const l = data.chart.result[0].indicators.quote[0].low;
-  const c = data.chart.result[0].indicators.quote[0].close;
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!data.chart.result) { alert("Invalid symbol"); return; }
 
-  // Find last non-null close (handles after market)
-  const closes = c.filter(v => v != null);
-  if(closes.length === 0){ alert("No valid price data"); return; }
-  lastPrice = closes[closes.length - 1];
+    const timestamps = data.chart.result[0].timestamp;
+    const o = data.chart.result[0].indicators.quote[0].open;
+    const h = data.chart.result[0].indicators.quote[0].high;
+    const l = data.chart.result[0].indicators.quote[0].low;
+    const c = data.chart.result[0].indicators.quote[0].close;
 
-  // Insert note if lastPrice is not today
-  const lastTimestamp = timestamps[c.lastIndexOf(lastPrice)];
-  const lastDate = new Date(lastTimestamp*1000);
-  const today = new Date();
-  const chartContainer = document.getElementById("chart");
-  document.querySelectorAll(".afterMarketNote").forEach(el=>el.remove());
-  if(lastDate.toDateString() !== today.toDateString()){
-    chartContainer.insertAdjacentHTML('beforebegin',
-      `<div class="afterMarketNote">Market closed: using last available close ($${lastPrice.toFixed(2)}) from ${lastDate.toDateString()}</div>`);
+    // Find last valid close
+    const closes = c.filter(v => v != null);
+    if(closes.length === 0){ alert("No valid price data"); return; }
+    lastPrice = closes[closes.length - 1];
+    portfolio[symbol].price = lastPrice; // update portfolio price
+
+    // Chart note for after-market
+    const lastTimestamp = timestamps[c.lastIndexOf(lastPrice)];
+    const lastDate = new Date(lastTimestamp*1000);
+    const today = new Date();
+    document.querySelectorAll(".afterMarketNote").forEach(el=>el.remove());
+    if(lastDate.toDateString() !== today.toDateString()){
+      document.getElementById("chart").insertAdjacentHTML('beforebegin',
+        `<div class="afterMarketNote">Market closed: using last available close ($${lastPrice.toFixed(2)}) from ${lastDate.toDateString()}</div>`);
+    }
+
+    // Draw candlestick
+    const trace = {
+      x: timestamps.map(t=>new Date(t*1000)),
+      open: o,
+      high: h,
+      low: l,
+      close: c,
+      type: 'candlestick',
+      increasing: {line:{color:'#00ff88'}},
+      decreasing: {line:{color:'#ff4b4b'}}
+    };
+    Plotly.newPlot('chart',[trace], {plot_bgcolor:document.body.style.backgroundColor, paper_bgcolor:document.body.style.backgroundColor});
+
+    updatePortfolioDisplay();
+  } catch(err){
+    alert("Error fetching stock data.");
   }
-
-  // Draw candlestick
-  const trace = {
-    x: timestamps.map(t=>new Date(t*1000)),
-    open: o,
-    high: h,
-    low: l,
-    close: c,
-    type: 'candlestick',
-    increasing: {line:{color:'#00ff88'}},
-    decreasing: {line:{color:'#ff4b4b'}}
-  };
-  Plotly.newPlot('chart',[trace], {plot_bgcolor:document.body.style.backgroundColor, paper_bgcolor:document.body.style.backgroundColor});
-
-  // Store last price for trading
-  if(!portfolio[symbol]) portfolio[symbol] = {shares:0, price:lastPrice};
-  else portfolio[symbol].price = lastPrice;
-  updatePortfolioDisplay();
 }
 
 // -------------------------
@@ -222,10 +231,14 @@ async function loadStock() {
 // -------------------------
 function buyStock() {
   const symbol = document.getElementById("symbol").value.toUpperCase();
+  ensurePortfolio(symbol);
   const shares = parseInt(document.getElementById("shares").value);
-  if(!portfolio[symbol]) { alert("Load stock first"); return; }
+  
+  if(portfolio[symbol].price <= 0) { alert("Load stock first"); return; }
+
   const cost = shares*portfolio[symbol].price;
-  if(cost>cash){ alert("Not enough cash"); return; }
+  if(cost > cash){ alert("Not enough cash"); return; }
+
   cash -= cost;
   portfolio[symbol].shares += shares;
   updatePortfolioDisplay();
@@ -233,8 +246,11 @@ function buyStock() {
 
 function sellStock() {
   const symbol = document.getElementById("symbol").value.toUpperCase();
+  ensurePortfolio(symbol);
   const shares = parseInt(document.getElementById("shares").value);
-  if(!portfolio[symbol] || portfolio[symbol].shares<shares){ alert("Not enough shares"); return; }
+
+  if(portfolio[symbol].shares < shares){ alert("Not enough shares"); return; }
+
   cash += shares*portfolio[symbol].price;
   portfolio[symbol].shares -= shares;
   updatePortfolioDisplay();
