@@ -1,0 +1,229 @@
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+from openai import OpenAI
+from streamlit_autorefresh import st_autorefresh
+
+# -------------------------
+# CONFIG
+# -------------------------
+st.set_page_config(layout="wide")
+st_autorefresh(interval=60000)
+
+# -------------------------
+# SESSION STATE
+# -------------------------
+if "cash" not in st.session_state:
+    st.session_state.cash = 10000.0
+if "portfolio" not in st.session_state:
+    st.session_state.portfolio = {}
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+# -------------------------
+# CUSTOM CSS (NEON + FLOATING BUBBLE)
+# -------------------------
+st.markdown("""
+<style>
+[data-testid="stAppViewContainer"] {
+    background-color: #0e1117;
+}
+
+h1, h2, h3 {
+    color: #00ff88;
+}
+
+.stButton>button {
+    background-color: #00ff88;
+    color: black;
+    border-radius: 12px;
+    font-weight: bold;
+}
+
+.stButton>button:hover {
+    background-color: #00cc6a;
+    box-shadow: 0 0 15px #00ff88;
+}
+
+/* Floating Chat Bubble */
+.chat-container {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 320px;
+    background: #161b22;
+    border-radius: 15px;
+    box-shadow: 0 0 20px rgba(0,255,136,0.3);
+    padding: 15px;
+    z-index: 9999;
+}
+
+.chat-header {
+    font-weight: bold;
+    color: #00ff88;
+    margin-bottom: 10px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# -------------------------
+# HEADER
+# -------------------------
+st.title("🟢 NeoTrade X")
+st.caption("Minimal. Powerful. Fast.")
+
+# -------------------------
+# GLOBAL MARKETS STRIP
+# -------------------------
+st.markdown("## 🌎 Markets")
+
+indices = {
+    "S&P 500": "^GSPC",
+    "NASDAQ": "^IXIC",
+    "Dow": "^DJI",
+    "Bitcoin": "BTC-USD",
+    "Ethereum": "ETH-USD"
+}
+
+cols = st.columns(len(indices))
+
+for i, (name, ticker_symbol) in enumerate(indices.items()):
+    data = yf.Ticker(ticker_symbol).history(period="1d")
+    if not data.empty:
+        price = data["Close"][-1]
+        open_price = data["Open"][0]
+        pct = ((price - open_price) / open_price) * 100
+        cols[i].metric(name, f"{price:.2f}", f"{pct:.2f}%")
+
+# -------------------------
+# STOCK EXPLORER
+# -------------------------
+st.markdown("## 📈 Stock Explorer")
+
+ticker = st.text_input("Symbol", "AAPL").upper()
+period = st.selectbox("Timeframe", ["1mo", "3mo", "6mo", "1y", "5y"])
+
+stock = yf.Ticker(ticker)
+hist = stock.history(period=period)
+
+if not hist.empty:
+
+    hist["SMA20"] = hist["Close"].rolling(20).mean()
+
+    delta = hist["Close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    rs = gain.rolling(14).mean() / loss.rolling(14).mean()
+    hist["RSI"] = 100 - (100 / (1 + rs))
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Candlestick(
+        x=hist.index,
+        open=hist["Open"],
+        high=hist["High"],
+        low=hist["Low"],
+        close=hist["Close"],
+        increasing_line_color="#00ff88",
+        decreasing_line_color="#ff4b4b"
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=hist.index,
+        y=hist["SMA20"],
+        line=dict(color="#00ff88"),
+        name="SMA 20"
+    ))
+
+    fig.update_layout(
+        template="plotly_dark",
+        plot_bgcolor="#0e1117",
+        paper_bgcolor="#0e1117",
+        height=600,
+        xaxis_rangeslider_visible=False
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+    st.line_chart(hist["RSI"])
+
+# -------------------------
+# PORTFOLIO
+# -------------------------
+st.markdown("## 💼 Portfolio")
+
+total_value = st.session_state.cash
+portfolio_data = []
+
+for sym, shares in st.session_state.portfolio.items():
+    price = yf.Ticker(sym).history(period="1d")["Close"][-1]
+    value = price * shares
+    total_value += value
+    portfolio_data.append({
+        "Ticker": sym,
+        "Shares": shares,
+        "Current Price": price,
+        "Value": value
+    })
+
+st.metric("Total Account Value", f"${total_value:,.2f}")
+st.metric("Cash", f"${st.session_state.cash:,.2f}")
+st.dataframe(pd.DataFrame(portfolio_data))
+
+shares = st.number_input("Shares", min_value=1.0)
+
+col1, col2 = st.columns(2)
+
+if col1.button("Buy"):
+    price = yf.Ticker(ticker).history(period="1d")["Close"][-1]
+    cost = price * shares
+    if st.session_state.cash >= cost:
+        st.session_state.cash -= cost
+        st.session_state.portfolio[ticker] = \
+            st.session_state.portfolio.get(ticker, 0) + shares
+
+if col2.button("Sell"):
+    if ticker in st.session_state.portfolio:
+        price = yf.Ticker(ticker).history(period="1d")["Close"][-1]
+        st.session_state.cash += price * shares
+        st.session_state.portfolio[ticker] -= shares
+        if st.session_state.portfolio[ticker] <= 0:
+            del st.session_state.portfolio[ticker]
+
+# -------------------------
+# FLOATING AI CHAT BUBBLE
+# -------------------------
+st.markdown('<div class="chat-container">', unsafe_allow_html=True)
+st.markdown('<div class="chat-header">🧠 AI Trade Assistant</div>', unsafe_allow_html=True)
+
+api_key = st.text_input("API Key", type="password", key="bubble_key")
+user_input = st.text_input("Ask about markets...")
+
+if st.button("Send"):
+    if api_key and user_input:
+        client = OpenAI(api_key=api_key)
+
+        st.session_state.chat_history.append({"role": "user", "content": user_input})
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=st.session_state.chat_history
+        )
+
+        reply = response.choices[0].message.content
+        st.session_state.chat_history.append({"role": "assistant", "content": reply})
+
+for msg in st.session_state.chat_history[-5:]:
+    if msg["role"] == "user":
+        st.markdown(f"**You:** {msg['content']}")
+    else:
+        st.markdown(f"**AI:** {msg['content']}")
+
+st.markdown('</div>', unsafe_allow_html=True)
+
+# -------------------------
+# FOOTER
+# -------------------------
+st.markdown("---")
+st.caption("NeoTrade X — Unicorn Edition 🦄")
