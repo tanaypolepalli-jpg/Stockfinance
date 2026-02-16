@@ -89,6 +89,12 @@
     box-shadow:0 0 15px rgba(0,255,136,0.3);
     z-index:1000;
   }
+
+  .afterMarketNote {
+    text-align:center;
+    color:#00ff88;
+    margin-bottom:5px;
+  }
 </style>
 </head>
 <body>
@@ -121,7 +127,8 @@
 <!-- Floating AI bubble -->
 <div id="aiBubble">
   <div id="aiBubbleHeader">AI Trade Assistant</div>
-  <input type="text" id="aiInput" placeholder="Ask about markets...">
+  <input type="password" id="openaiKey" placeholder="API Key" style="width:180px;"><br>
+  <input type="text" id="aiInput" placeholder="Ask about markets..." style="width:100%;margin-top:5px;">
   <button onclick="askAI()">Send</button>
   <div id="aiResponse" style="margin-top:5px;"></div>
 </div>
@@ -175,6 +182,22 @@ async function loadStock() {
   const l = data.chart.result[0].indicators.quote[0].low;
   const c = data.chart.result[0].indicators.quote[0].close;
 
+  // Find last non-null close (handles after market)
+  const closes = c.filter(v => v != null);
+  if(closes.length === 0){ alert("No valid price data"); return; }
+  lastPrice = closes[closes.length - 1];
+
+  // Insert note if lastPrice is not today
+  const lastTimestamp = timestamps[c.lastIndexOf(lastPrice)];
+  const lastDate = new Date(lastTimestamp*1000);
+  const today = new Date();
+  const chartContainer = document.getElementById("chart");
+  document.querySelectorAll(".afterMarketNote").forEach(el=>el.remove());
+  if(lastDate.toDateString() !== today.toDateString()){
+    chartContainer.insertAdjacentHTML('beforebegin',
+      `<div class="afterMarketNote">Market closed: using last available close ($${lastPrice.toFixed(2)}) from ${lastDate.toDateString()}</div>`);
+  }
+
   // Draw candlestick
   const trace = {
     x: timestamps.map(t=>new Date(t*1000)),
@@ -189,7 +212,6 @@ async function loadStock() {
   Plotly.newPlot('chart',[trace], {plot_bgcolor:document.body.style.backgroundColor, paper_bgcolor:document.body.style.backgroundColor});
 
   // Store last price for trading
-  lastPrice = c[c.length-1];
   if(!portfolio[symbol]) portfolio[symbol] = {shares:0, price:lastPrice};
   else portfolio[symbol].price = lastPrice;
   updatePortfolioDisplay();
@@ -219,17 +241,43 @@ function sellStock() {
 }
 
 // -------------------------
-// AI Bubble (Rule-based)
+// Smart AI using OpenAI GPT
 // -------------------------
-function askAI() {
-  const input = document.getElementById("aiInput").value.toLowerCase();
-  let reply = "";
-  if(input.includes("buy")) reply = "Check the trend and RSI before buying.";
-  else if(input.includes("sell")) reply = "Consider profits/losses before selling.";
-  else if(input.includes("trend")) reply = "Look at candlestick patterns for short-term trend.";
-  else if(input.includes("rsi")) reply = "RSI >70 = overbought, <30 = oversold.";
-  else reply = "I can give buy/sell hints or explain trend/RSI.";
-  document.getElementById("aiResponse").innerHTML = reply;
+async function askAI() {
+  const key = document.getElementById("openaiKey").value.trim();
+  const input = document.getElementById("aiInput").value.trim();
+  if(!key || !input){
+    document.getElementById("aiResponse").innerHTML = "Enter your API key and question.";
+    return;
+  }
+
+  document.getElementById("aiResponse").innerHTML = "Thinking...";
+
+  try {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "Authorization": `Bearer ${key}`
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {role:"system", content:"You are a helpful and professional trading assistant."},
+          {role:"user", content: input}
+        ]
+      })
+    });
+
+    const data = await res.json();
+    if(data.choices && data.choices[0].message){
+      document.getElementById("aiResponse").innerHTML = data.choices[0].message.content;
+    } else {
+      document.getElementById("aiResponse").innerHTML = "Error getting response.";
+    }
+  } catch(err){
+    document.getElementById("aiResponse").innerHTML = "Error connecting to OpenAI.";
+  }
 }
 
 // -------------------------
@@ -252,7 +300,8 @@ async function loadMarkets() {
     const data = await res.json();
     if(!data.chart.result) continue;
     const c = data.chart.result[0].indicators.quote[0].close;
-    document.getElementById(indices[sym]).innerHTML = `${indices[sym]}<br>$${c[c.length-1].toFixed(2)}`;
+    const lastVal = c.filter(v=>v!=null).pop();
+    if(lastVal) document.getElementById(indices[sym]).innerHTML = `${indices[sym]}<br>$${lastVal.toFixed(2)}`;
   }
 }
 loadMarkets();
